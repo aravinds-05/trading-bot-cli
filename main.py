@@ -17,6 +17,7 @@ from bot.core import execute_order_with_client
 from bot.exceptions import TradingBotError
 from bot.logging_config import configure_logging, get_logger
 from bot.orders import OrderRequest, OrderResult, OrderType, Side
+from bot.validators import validate_symbol_format
 
 app = typer.Typer(
     name="trading-bot",
@@ -161,7 +162,12 @@ def _ask_for_symbol(settings) -> str:
     if choice == 3: return "SOLUSDT"
     if choice == 4: return "BNBUSDT"
     
-    return Prompt.ask("[bold yellow]Type Custom Symbol[/bold yellow] (e.g. XRPUSDT)").strip().upper()
+    while True:
+        raw = Prompt.ask("[bold yellow]Type Custom Symbol[/bold yellow] (e.g. XRPUSDT)")
+        try:
+            return validate_symbol_format(raw)
+        except TradingBotError as exc:
+            console.print(f"[yellow]{exc}[/yellow]")
 
 def _interactive_view_price(settings) -> None:
     symbol = _ask_for_symbol(settings)
