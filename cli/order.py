@@ -43,8 +43,6 @@ def get_last_order_panel(last_order: Optional[dict] = None, stats: Optional[dict
         table.add_row("Price", f": {last_order.get('price', '0')} USDT")
         table.add_row("Status", f": {status}")
         if status == "REJECTED" and "reason" in last_order:
-            # Wrap the reason string so it doesn't break the layout if it's too long
-            from rich.text import Text
             wrapped_reason = Text(last_order['reason'], style="danger", overflow="fold")
             table.add_row("Reason", f": ")
             table.add_row("", wrapped_reason)
