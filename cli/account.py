@@ -3,14 +3,12 @@ cli/account.py
 Renders the Account Summary panel.
 """
 from rich.panel import Panel
-from rich.table import Table
 from datetime import datetime, timezone
+from cli.grids import create_label_value_grid
 from cli.theme import PANEL_KWARGS
 
 def get_account_summary_panel() -> Panel:
-    table = Table.grid(padding=(0, 2))
-    table.add_column(style="label", justify="left")
-    table.add_column(justify="left")
+    table = create_label_value_grid()
     
     table.add_row("Account Type", ": USD-M Futures (Testnet)")
     table.add_row("API Key", ": [success]Loaded[/success]")

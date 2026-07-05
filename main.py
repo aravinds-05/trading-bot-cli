@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Callable, Coroutine, Optional
 
 import typer
 from rich.console import Console
@@ -12,11 +12,12 @@ import asyncio
 from pydantic import ValidationError
 
 from bot.client import BinanceFuturesTestnetClient
-from bot.config import get_settings
+from bot.config import Settings, get_settings
 from bot.core import execute_order_with_client
 from bot.exceptions import TradingBotError
 from bot.logging_config import configure_logging, get_logger
 from bot.orders import OrderRequest, OrderResult, OrderType, Side
+from cli.formatters import fmt_num
 
 app = typer.Typer(
     name="trading-bot",
@@ -27,36 +28,18 @@ console = Console()
 logger = get_logger(__name__)
 
 
-async def _execute_order(settings, request: OrderRequest) -> OrderResult:
-    client = BinanceFuturesTestnetClient(settings)
-    try:
-        return await execute_order_with_client(client, request)
-    finally:
-        await client.close()
+def _print_error_panel(message: str, title: str = "Error") -> None:
+    """Display a red error panel — replaces several duplicated calls."""
+    console.print(Panel(message, title=f"[bold red]{title}[/bold red]", border_style="red"))
 
 
-async def _get_balance(settings) -> list[dict]:
-    client = BinanceFuturesTestnetClient(settings)
-    try:
-        return await client.get_balance()
-    finally:
-        await client.close()
-
-
-async def _get_price(settings, symbol: str) -> float:
-    client = BinanceFuturesTestnetClient(settings)
-    try:
-        return await client.get_price(symbol)
-    finally:
-        await client.close()
-
-
-async def _get_all_prices(settings) -> dict[str, float]:
-    client = BinanceFuturesTestnetClient(settings)
-    try:
-        return await client.get_all_prices()
-    finally:
-        await client.close()
+async def _with_client(
+    settings: Settings,
+    fn: Callable[[BinanceFuturesTestnetClient], Coroutine[Any, Any, Any]],
+) -> Any:
+    """Run *fn* with a short-lived client, ensuring cleanup."""
+    async with BinanceFuturesTestnetClient(settings) as client:
+        return await fn(client)
 
 
 @app.command()
@@ -88,21 +71,23 @@ def place_order(
             raise typer.Exit(code=0)
 
         with console.status("[bold cyan]Executing order on Binance Testnet...[/bold cyan]", spinner="dots"):
-            result = asyncio.run(_execute_order(settings, request))
+            result = asyncio.run(
+                _with_client(settings, lambda c: execute_order_with_client(c, request))
+            )
             
         _print_result(result)
 
     except ValidationError as exc:
         logger.error("Validation error: %s", exc)
-        console.print(Panel(str(exc), title="[bold red]Validation Error[/bold red]", border_style="red"))
+        _print_error_panel(str(exc), "Validation Error")
         raise typer.Exit(code=1)
     except TradingBotError as exc:
         logger.error("Order failed: %s", exc)
-        console.print(Panel(str(exc), title="[bold red]Order Failed[/bold red]", border_style="red"))
+        _print_error_panel(str(exc), "Order Failed")
         raise typer.Exit(code=1)
     except Exception as exc:  # last-resort safety net, should rarely fire
         logger.exception("Unexpected error in CLI")
-        console.print(Panel(f"Unexpected error: {exc}", title="[bold red]Error[/bold red]", border_style="red"))
+        _print_error_panel(f"Unexpected error: {exc}")
         raise typer.Exit(code=1)
 
 
@@ -114,7 +99,7 @@ def interactive() -> None:
 def _interactive_view_balance(settings) -> None:
     try:
         with console.status("[bold cyan]Fetching balances...[/bold cyan]", spinner="dots"):
-            balances = asyncio.run(_get_balance(settings))
+            balances = asyncio.run(_with_client(settings, lambda c: c.get_balance()))
         
         table = Table(title="Wallet Balance", show_header=True)
         table.add_column("Asset", style="bold cyan")
@@ -128,14 +113,14 @@ def _interactive_view_balance(settings) -> None:
                 
         console.print(table)
     except Exception as e:
-        console.print(Panel(f"Failed to fetch balance: {e}", title="[bold red]Error[/bold red]", border_style="red"))
+        _print_error_panel(f"Failed to fetch balance: {e}")
 
 def _ask_for_symbol(settings) -> str:
     console.print()
     
     try:
         with console.status("[bold cyan]Fetching live market prices...[/bold cyan]", spinner="dots"):
-            prices = asyncio.run(_get_all_prices(settings))
+            prices = asyncio.run(_with_client(settings, lambda c: c.get_all_prices()))
             
         p_btc = prices.get("BTCUSDT", 0.0)
         p_eth = prices.get("ETHUSDT", 0.0)
@@ -167,10 +152,10 @@ def _interactive_view_price(settings) -> None:
     symbol = _ask_for_symbol(settings)
     try:
         with console.status(f"[bold cyan]Fetching live price for {symbol}...[/bold cyan]", spinner="dots"):
-            price = asyncio.run(_get_price(settings, symbol))
+            price = asyncio.run(_with_client(settings, lambda c: c.get_price(symbol)))
         console.print(Panel(f"The live mark price of [bold green]{symbol}[/bold green] is [bold yellow]${price}[/bold yellow]", border_style="green"))
     except Exception as e:
-        console.print(Panel(f"Failed to fetch price: {e}", title="[bold red]Error[/bold red]", border_style="red"))
+        _print_error_panel(f"Failed to fetch price: {e}")
 
 def _interactive_place_order(settings) -> None:
     console.print(Panel("[bold cyan]Interactive Order Entry[/bold cyan]", border_style="cyan"))
@@ -208,16 +193,6 @@ def _print_request_summary(request: OrderRequest) -> None:
     console.print(table)
 
 
-def _fmt_num(value: Optional[str]) -> str:
-    """Show a numeric string, or 'N/A' when it's missing or zero."""
-    if value is None:
-        return "N/A"
-    try:
-        return value if float(value) != 0 else "N/A"
-    except (TypeError, ValueError):
-        return str(value)
-
-
 def _print_result(result: OrderResult) -> None:
     table = Table(title="Order Response", show_header=False)
     table.add_column("Field", style="bold cyan")
@@ -225,7 +200,7 @@ def _print_result(result: OrderResult) -> None:
     table.add_row("Order ID", str(result.order_id))
     table.add_row("Status", str(result.status))
     table.add_row("Executed Qty", str(result.executed_qty))
-    table.add_row("Avg Price", _fmt_num(result.avg_price))
+    table.add_row("Avg Price", fmt_num(result.avg_price))
     console.print(table)
     console.print(Panel(
         f"Order {result.order_id} submitted (status: {result.status}).",

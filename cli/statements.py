@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+from cli.formatters import format_pnl_markup, format_side_markup
 from cli.theme import PANEL_KWARGS, TABLE_KWARGS
 
 def get_statements_panel(trades: List[dict[str, Any]]) -> Panel:
@@ -43,8 +44,7 @@ def get_statements_panel(trades: List[dict[str, Any]]) -> Panel:
         
         # Side
         side = trade.get("side", "")
-        side_style = "value.positive" if side == "BUY" else "value.negative"
-        side_str = f"[{side_style}]{side}[/{side_style}]"
+        side_str = format_side_markup(side)
         
         # Price and Qty
         price = float(trade.get("price", 0))
@@ -52,9 +52,7 @@ def get_statements_panel(trades: List[dict[str, Any]]) -> Panel:
         
         # PnL
         pnl = float(trade.get("realizedPnl", 0))
-        pnl_style = "value.positive" if pnl > 0 else ("value.negative" if pnl < 0 else "info")
-        pnl_sign = "+" if pnl > 0 else ""
-        pnl_str = f"[{pnl_style}]{pnl_sign}{pnl:.4f}[/{pnl_style}]"
+        pnl_str = format_pnl_markup(pnl, precision=4)
         
         # Fee
         fee = float(trade.get("commission", 0))

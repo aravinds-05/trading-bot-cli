@@ -6,6 +6,8 @@ from rich.panel import Panel
 from rich.text import Text
 from rich.table import Table
 from rich.console import Group
+from cli.formatters import format_pnl_markup
+from cli.grids import create_label_value_grid
 from cli.theme import PANEL_KWARGS
 import datetime
 
@@ -29,9 +31,7 @@ def get_last_order_panel(last_order: Optional[dict] = None, stats: Optional[dict
         order_text = Text("\nNo orders placed in this session.\n", style="warning", justify="center")
         order_group = Panel(order_text, border_style="panel.border")
     else:
-        table = Table.grid(padding=(0, 2))
-        table.add_column(style="label", justify="left")
-        table.add_column(justify="left")
+        table = create_label_value_grid()
         
         status = last_order.get("status", "NEW")
         style = "success" if status in ["FILLED", "NEW"] else "danger"
@@ -55,16 +55,12 @@ def get_last_order_panel(last_order: Optional[dict] = None, stats: Optional[dict
         order_group = Panel(table, title=f"[{style}]{title}[/{style}]", title_align="left", border_style="panel.border")
 
     stats = stats or {"positions": 0, "orders": 0, "pnl": 0.0}
-    stats_table = Table.grid(padding=(0, 2))
-    stats_table.add_column(style="label", justify="left")
-    stats_table.add_column(justify="left")
+    stats_table = create_label_value_grid()
     stats_table.add_row("Total Positions", f": [info]{stats.get('positions', 0)}[/info]")
     stats_table.add_row("Open Orders", f": [info]{stats.get('orders', 0)}[/info]")
     
     pnl = float(stats.get('pnl', 0.0))
-    p_style = "value.positive" if pnl >= 0 else "value.negative"
-    p_sign = "+" if pnl >= 0 else ""
-    stats_table.add_row("Total PnL (Today)", f": [{p_style}]{p_sign}{pnl:.2f} USDT[/{p_style}]")
+    stats_table.add_row("Total PnL (Today)", f": {format_pnl_markup(pnl, 'USDT')}")
     
     stats_group = Panel(stats_table, title="[info]QUICK STATS[/info]", title_align="left", border_style="panel.border")
     

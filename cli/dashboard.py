@@ -76,12 +76,10 @@ async def render_dashboard(client: BinanceFuturesTestnetClient, last_order: Opti
 async def interactive_loop():
     settings = get_settings()
     configure_logging(settings.log_path)
-    client = BinanceFuturesTestnetClient(settings)
-    
     last_order = None
     stats = {"positions": 0, "orders": 0, "pnl": 0.0}
     
-    try:
+    async with BinanceFuturesTestnetClient(settings) as client:
         while True:
             await render_dashboard(client, last_order, stats)
             
@@ -171,8 +169,6 @@ async def interactive_loop():
                             "status": "REJECTED",
                             "reason": str(e)
                         }
-    finally:
-        await client.close()
 
 def run():
     asyncio.run(interactive_loop())
