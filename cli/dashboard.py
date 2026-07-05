@@ -11,7 +11,7 @@ from typing import Optional
 
 from bot.config import get_settings
 from bot.client import BinanceFuturesTestnetClient
-from bot.logging_config import configure_logging
+from bot.logging_config import configure_logging, get_logger
 from bot.orders import OrderRequest, OrderResult, OrderType, Side
 from bot.core import execute_order_with_client
 
@@ -25,6 +25,8 @@ from cli.positions import get_positions_panel
 from cli.order import get_place_order_panel, get_last_order_panel
 from cli.menu import get_menu_panel
 
+logger = get_logger(__name__)
+
 async def render_dashboard(client: BinanceFuturesTestnetClient, last_order: Optional[dict] = None, stats: Optional[dict] = None):
     # We will fetch data first so we know how many positions to render
     with console.status("[info]Fetching Live Exchange Data...[/info]", spinner="dots"):
@@ -37,6 +39,7 @@ async def render_dashboard(client: BinanceFuturesTestnetClient, last_order: Opti
         try:
             tickers = await client.get_24hr_tickers()
         except Exception:
+            logger.warning("Could not fetch 24hr tickers; rendering prices panel without them.", exc_info=True)
             tickers = None
         
     from rich.table import Table
@@ -129,13 +132,21 @@ async def interactive_loop():
                 
                 qty_str = await questionary.text("Quantity (e.g. 0.01):", default="0.01").ask_async()
                 if not qty_str: continue
-                qty = float(qty_str)
-                
+                try:
+                    qty = float(qty_str)
+                except ValueError:
+                    console.print(f"\n[danger]'{qty_str}' is not a valid quantity. Please enter a number.[/danger]\n")
+                    continue
+
                 price = None
                 if order_type_str == "LIMIT":
                     price_str = await questionary.text("Price (USDT):", default="60000").ask_async()
                     if not price_str: continue
-                    price = float(price_str)
+                    try:
+                        price = float(price_str)
+                    except ValueError:
+                        console.print(f"\n[danger]'{price_str}' is not a valid price. Please enter a number.[/danger]\n")
+                        continue
                     
                 confirm = await questionary.confirm("Confirm order?").ask_async()
                 if confirm:
@@ -164,8 +175,7 @@ async def interactive_loop():
                         }
                         stats["orders"] += 1
                     except Exception as e:
-                        import logging
-                        logging.getLogger("trading_bot.__main__").error(f"Order failed: {e}")
+                        logger.exception("Order failed")
                         last_order = {
                             **req_dict,
                             "status": "REJECTED",

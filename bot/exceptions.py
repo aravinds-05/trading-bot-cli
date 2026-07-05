@@ -59,10 +59,16 @@ class AuthenticationError(APIError):
 class BinanceAPIError(APIError):
     """Binance responded, but with an error code (e.g. -1121 invalid symbol)."""
 
-    def __init__(self, code: int | None, message: str) -> None:
+    def __init__(
+        self,
+        code: int | str | None,
+        message: str,
+        status_code: int | None = None,
+        response: dict | None = None,
+    ) -> None:
         self.code = code
         self.message = message
-        super().__init__(f"Binance API error {code}: {message}")
+        super().__init__(f"Binance API error {code}: {message}", status_code, response)
 
 
 class APIConnectionError(APIError):
