@@ -7,7 +7,12 @@ import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from bot.config import Settings
-from bot.exceptions import APIConnectionError, APIError, AuthenticationError
+from bot.exceptions import (
+    APIConnectionError,
+    APIError,
+    AuthenticationError,
+    BinanceAPIError,
+)
 from bot.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -35,33 +40,34 @@ class BinanceFuturesTestnetClient:
         await self._client.aclose()
 
     async def sync_time(self) -> None:
+        # Best-effort: a failed sync is non-fatal (signed requests re-attempt it),
+        # so we log and continue instead of raising. We only swallow *network*
+        # failures here, though -- narrowing the except means a genuine bug
+        # (e.g. a bad payload) surfaces via the traceback instead of hiding
+        # behind a vague "failed to synchronize" warning.
         try:
             logger.info("Synchronizing time with Binance...")
             response = await self._client.get("/fapi/v1/time")
             response.raise_for_status()
             server_time = response.json().get("serverTime")
-            if server_time:
-                local_time = int(time.time() * 1000)
-                self._time_offset = server_time - local_time
-                logger.info(f"Time synchronized. Offset is {self._time_offset}ms.")
-            else:
-                logger.warning("Could not find serverTime in response.")
-        except Exception as e:
-            logger.warning(f"Failed to synchronize time: {e}")
+        except (httpx.HTTPError, ValueError) as e:
+            logger.warning("Failed to synchronize time, continuing with offset %dms: %s", self._time_offset, e)
+            return
+
+        if server_time:
+            local_time = int(time.time() * 1000)
+            self._time_offset = server_time - local_time
+            logger.info(f"Time synchronized. Offset is {self._time_offset}ms.")
+        else:
+            logger.warning("Could not find serverTime in response; keeping offset %dms.", self._time_offset)
 
     async def get_exchange_info(self) -> dict[str, Any]:
         if self._exchange_info is not None:
             return self._exchange_info
-            
-        try:
-            logger.info("Fetching exchange info...")
-            response = await self._client.get("/fapi/v1/exchangeInfo")
-            response.raise_for_status()
-            self._exchange_info = response.json()
-            return self._exchange_info
-        except Exception as e:
-            logger.error(f"Failed to fetch exchange info: {e}")
-            raise APIConnectionError(f"Failed to fetch exchange info: {e}") from e
+
+        logger.info("Fetching exchange info...")
+        self._exchange_info = await self._public_get("/fapi/v1/exchangeInfo")
+        return self._exchange_info
 
     async def place_order(self, params: dict[str, Any]) -> dict[str, Any]:
         # Ensure time is synchronized before the first signed request
@@ -93,26 +99,20 @@ class BinanceFuturesTestnetClient:
         return await self._signed_request("GET", "/fapi/v1/userTrades", {"limit": limit})
 
     async def get_price(self, symbol: str) -> float:
+        logger.info("Fetching price for %s...", symbol)
+        data = await self._public_get(f"/fapi/v1/ticker/price?symbol={symbol}")
         try:
-            logger.info("Fetching price for %s...", symbol)
-            response = await self._client.get(f"/fapi/v1/ticker/price?symbol={symbol}")
-            response.raise_for_status()
-            data = response.json()
             return float(data["price"])
-        except Exception as e:
-            logger.error(f"Failed to fetch price: {e}")
-            raise APIConnectionError(f"Failed to fetch price: {e}") from e
+        except (KeyError, TypeError, ValueError) as e:
+            raise APIError(f"Unexpected price payload for {symbol}: {data}") from e
 
     async def get_all_prices(self) -> dict[str, float]:
+        logger.info("Fetching prices for all symbols...")
+        data = await self._public_get("/fapi/v1/ticker/price")
         try:
-            logger.info("Fetching prices for all symbols...")
-            response = await self._client.get("/fapi/v1/ticker/price")
-            response.raise_for_status()
-            data = response.json()
             return {item["symbol"]: float(item["price"]) for item in data}
-        except Exception as e:
-            logger.error(f"Failed to fetch all prices: {e}")
-            raise APIConnectionError(f"Failed to fetch all prices: {e}") from e
+        except (KeyError, TypeError, ValueError) as e:
+            raise APIError(f"Unexpected all-prices payload: {data}") from e
 
     async def get_24hr_tickers(self) -> dict[str, dict[str, float]]:
         """Fetch 24h rolling stats (last price + % change) for all symbols.
@@ -120,11 +120,9 @@ class BinanceFuturesTestnetClient:
         Public endpoint, no signing required. Returns a dict keyed by symbol:
         ``{"BTCUSDT": {"price": 61932.4, "change_pct": -1.23}, ...}``.
         """
+        logger.info("Fetching 24hr ticker stats...")
+        data = await self._public_get("/fapi/v1/ticker/24hr")
         try:
-            logger.info("Fetching 24hr ticker stats...")
-            response = await self._client.get("/fapi/v1/ticker/24hr")
-            response.raise_for_status()
-            data = response.json()
             return {
                 item["symbol"]: {
                     "price": float(item.get("lastPrice", 0.0)),
@@ -132,9 +130,23 @@ class BinanceFuturesTestnetClient:
                 }
                 for item in data
             }
-        except Exception as e:
-            logger.error(f"Failed to fetch 24hr tickers: {e}")
-            raise APIConnectionError(f"Failed to fetch 24hr tickers: {e}") from e
+        except (KeyError, TypeError, ValueError) as e:
+            raise APIError(f"Unexpected 24hr ticker payload: {data}") from e
+
+    async def _public_get(self, endpoint: str) -> Any:
+        """GET an unsigned public endpoint.
+
+        Network failures become ``APIConnectionError``; HTTP/Binance error
+        responses are routed through ``_handle_response`` so they surface as
+        typed ``APIError``/``BinanceAPIError`` (preserving the Binance error
+        code) instead of being flattened into a generic connection error.
+        """
+        try:
+            response = await self._client.get(endpoint)
+        except httpx.RequestError as e:
+            logger.error("Network error calling %s: %s", endpoint, e)
+            raise APIConnectionError(f"Network error calling {endpoint}: {e}") from e
+        return self._handle_response(response)
 
     @retry(
         retry=retry_if_exception(is_retryable),
@@ -190,8 +202,8 @@ class BinanceFuturesTestnetClient:
                 
                 if code == -2015 or code == -1022:  # Auth errors
                     raise AuthenticationError(f"Binance Auth Error: {msg}")
-                
-                raise APIError(f"Binance Error [{code}]: {msg}", response.status_code, data)
+
+                raise BinanceAPIError(code, msg, status_code=response.status_code, response=data)
             else:
                 raise APIError("Binance Error", response.status_code, {"raw": data})
             
