@@ -60,7 +60,7 @@ def get_settings() -> Settings:
         # Check if the missing fields are the required api keys
         errors = exc.errors()
         for error in errors:
-            if error["loc"] == ("api_key",) or error["loc"] == ("api_secret",):
+            if error["loc"] in (("api_key",), ("api_secret",), ("BINANCE_API_KEY",), ("BINANCE_API_SECRET",)):
                 raise AuthenticationError(
                     "Missing Binance API credentials. Set BINANCE_API_KEY and "
                     "BINANCE_API_SECRET in .env (copy .env.example to get started)."
