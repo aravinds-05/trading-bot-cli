@@ -95,7 +95,9 @@ class BinanceFuturesTestnetClient:
     async def get_price(self, symbol: str) -> float:
         try:
             logger.info("Fetching price for %s...", symbol)
-            response = await self._client.get(f"/fapi/v1/ticker/price?symbol={symbol}")
+            response = await self._client.get(
+                "/fapi/v1/ticker/price", params={"symbol": symbol}
+            )
             response.raise_for_status()
             data = response.json()
             return float(data["price"])
