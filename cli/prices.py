@@ -9,6 +9,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from cli.formatters import format_change_arrow
 from cli.theme import PANEL_KWARGS, TABLE_KWARGS
 
 # Default symbols shown in the live-prices box.
@@ -47,9 +48,7 @@ def get_prices_panel(
 
         price = float(ticker.get("price", 0.0))
         change = float(ticker.get("change_pct", 0.0))
-        change_style = "value.positive" if change >= 0 else "value.negative"
-        arrow = "▲" if change >= 0 else "▼"
-        sign = "+" if change >= 0 else ""
+        change_style, arrow, sign = format_change_arrow(change)
 
         table.add_row(
             f"[label]{sym}[/label]",

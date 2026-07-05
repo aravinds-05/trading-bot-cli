@@ -4,6 +4,7 @@ Renders the Open Positions table.
 """
 from rich.panel import Panel
 from rich.console import Group
+from cli.formatters import format_pnl, format_pnl_markup
 from cli.tables import create_base_table
 from cli.theme import PANEL_KWARGS
 
@@ -32,8 +33,7 @@ def get_positions_panel(positions: list[dict]) -> Panel:
             pnl = float(pos.get("unRealizedProfit", 0.0))
             total_pnl += pnl
             
-            pnl_style = "value.positive" if pnl >= 0 else "value.negative"
-            pnl_sign = "+" if pnl >= 0 else ""
+            pnl_style, pnl_sign, _ = format_pnl(pnl)
             
             table.add_row(
                 str(idx),
@@ -42,14 +42,12 @@ def get_positions_panel(positions: list[dict]) -> Panel:
                 f"{abs(amt):.4f}",
                 f"{float(pos.get('entryPrice', 0.0)):.2f}",
                 f"{float(pos.get('markPrice', 0.0)):.2f}",
-                f"[{pnl_style}]{pnl_sign}{pnl:,.2f} USDT[/{pnl_style}]",
+                format_pnl_markup(pnl, "USDT"),
                 f"[{pnl_style}]{pnl_sign}0.00%[/{pnl_style}]",  # Mock ROE for UI fidelity
                 f"{float(pos.get('isolatedMargin', 0.0)) or 0.0:,.2f} USDT",
                 f"[warning]{pos.get('leverage', '1')}x[/warning]"
             )
             
-    pnl_style = "value.positive" if total_pnl >= 0 else "value.negative"
-    pnl_sign = "+" if total_pnl >= 0 else ""
-    footer = f"\nTotal Unrealized PnL: [{pnl_style}]{pnl_sign}{total_pnl:,.2f} USDT[/{pnl_style}]"
+    footer = f"\nTotal Unrealized PnL: {format_pnl_markup(total_pnl, 'USDT')}"
     
     return Panel(Group(table, footer), title="[header]YOUR POSITIONS (CURRENTLY OPEN)[/header]", **PANEL_KWARGS)  # type: ignore

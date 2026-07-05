@@ -34,6 +34,12 @@ class BinanceFuturesTestnetClient:
     async def close(self) -> None:
         await self._client.aclose()
 
+    async def __aenter__(self) -> "BinanceFuturesTestnetClient":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.close()
+
     async def sync_time(self) -> None:
         try:
             logger.info("Synchronizing time with Binance...")
@@ -63,56 +69,62 @@ class BinanceFuturesTestnetClient:
             logger.error(f"Failed to fetch exchange info: {e}")
             raise APIConnectionError(f"Failed to fetch exchange info: {e}") from e
 
-    async def place_order(self, params: dict[str, Any]) -> dict[str, Any]:
-        # Ensure time is synchronized before the first signed request
+    async def _ensure_time_synced(self) -> None:
+        """Lazily synchronise the clock before the first signed request."""
         if self._time_offset == 0:
             await self.sync_time()
+
+    async def place_order(self, params: dict[str, Any]) -> dict[str, Any]:
+        await self._ensure_time_synced()
         return await self._signed_request("POST", "/fapi/v1/order", params)
 
     async def get_order(self, symbol: str, order_id: int) -> dict[str, Any]:
         """Query a single order's current state (used to surface MARKET fills)."""
-        if self._time_offset == 0:
-            await self.sync_time()
+        await self._ensure_time_synced()
         return await self._signed_request(
             "GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id}
         )
 
     async def get_balance(self) -> list[dict[str, Any]]:
-        if self._time_offset == 0:
-            await self.sync_time()
+        await self._ensure_time_synced()
         return await self._signed_request("GET", "/fapi/v2/balance", {})
 
     async def get_positions(self) -> list[dict[str, Any]]:
-        if self._time_offset == 0:
-            await self.sync_time()
+        await self._ensure_time_synced()
         return await self._signed_request("GET", "/fapi/v2/positionRisk", {})
 
     async def get_recent_trades(self, limit: int = 5) -> list[dict[str, Any]]:
-        if self._time_offset == 0:
-            await self.sync_time()
+        await self._ensure_time_synced()
         return await self._signed_request("GET", "/fapi/v1/userTrades", {"limit": limit})
 
-    async def get_price(self, symbol: str) -> float:
+    async def _public_get(self, endpoint: str, description: str) -> Any:
+        """Execute a public (unsigned) GET and return parsed JSON.
+
+        Centralises the logging / error-wrapping that every public endpoint
+        was duplicating.
+        """
         try:
-            logger.info("Fetching price for %s...", symbol)
-            response = await self._client.get(f"/fapi/v1/ticker/price?symbol={symbol}")
+            logger.info("%s...", description)
+            response = await self._client.get(endpoint)
             response.raise_for_status()
-            data = response.json()
-            return float(data["price"])
+            return response.json()
         except Exception as e:
-            logger.error(f"Failed to fetch price: {e}")
-            raise APIConnectionError(f"Failed to fetch price: {e}") from e
+            logger.error("%s failed: %s", description, e)
+            raise APIConnectionError(f"{description} failed: {e}") from e
+
+    async def get_price(self, symbol: str) -> float:
+        data = await self._public_get(
+            f"/fapi/v1/ticker/price?symbol={symbol}",
+            f"Fetching price for {symbol}",
+        )
+        return float(data["price"])
 
     async def get_all_prices(self) -> dict[str, float]:
-        try:
-            logger.info("Fetching prices for all symbols...")
-            response = await self._client.get("/fapi/v1/ticker/price")
-            response.raise_for_status()
-            data = response.json()
-            return {item["symbol"]: float(item["price"]) for item in data}
-        except Exception as e:
-            logger.error(f"Failed to fetch all prices: {e}")
-            raise APIConnectionError(f"Failed to fetch all prices: {e}") from e
+        data = await self._public_get(
+            "/fapi/v1/ticker/price",
+            "Fetching prices for all symbols",
+        )
+        return {item["symbol"]: float(item["price"]) for item in data}
 
     async def get_24hr_tickers(self) -> dict[str, dict[str, float]]:
         """Fetch 24h rolling stats (last price + % change) for all symbols.
@@ -120,21 +132,17 @@ class BinanceFuturesTestnetClient:
         Public endpoint, no signing required. Returns a dict keyed by symbol:
         ``{"BTCUSDT": {"price": 61932.4, "change_pct": -1.23}, ...}``.
         """
-        try:
-            logger.info("Fetching 24hr ticker stats...")
-            response = await self._client.get("/fapi/v1/ticker/24hr")
-            response.raise_for_status()
-            data = response.json()
-            return {
-                item["symbol"]: {
-                    "price": float(item.get("lastPrice", 0.0)),
-                    "change_pct": float(item.get("priceChangePercent", 0.0)),
-                }
-                for item in data
+        data = await self._public_get(
+            "/fapi/v1/ticker/24hr",
+            "Fetching 24hr ticker stats",
+        )
+        return {
+            item["symbol"]: {
+                "price": float(item.get("lastPrice", 0.0)),
+                "change_pct": float(item.get("priceChangePercent", 0.0)),
             }
-        except Exception as e:
-            logger.error(f"Failed to fetch 24hr tickers: {e}")
-            raise APIConnectionError(f"Failed to fetch 24hr tickers: {e}") from e
+            for item in data
+        }
 
     @retry(
         retry=retry_if_exception(is_retryable),
